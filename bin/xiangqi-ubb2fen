@@ -1,0 +1,282 @@
+#! /bin/bash
+# coding: utf-8
+
+## filename: ubb2fen
+#  original filename: ubb2text.sh
+
+##
+# by Careone <emacslocale@126.com>
+
+### DEFINES ###
+APPVER="0.1.1"
+UPDATE_DATE="2018-1-27"
+APPNAME="ubb2fen"
+
+APPDIR="$HOME/xiangqi/$APPNAME"
+
+## DEBUG SWITCH
+DEBUG=0
+## ///DEBUG SWITCH///
+
+## array id: 0-7. and 0 used for BLANK;
+# pr[@], pb[@]:   Piece of Red/Black
+# pcr[@], pcb[@]: Piece Code of Red/black
+#
+RED="红方"
+BLACK="黑方"
+declare -a pcr=( '' R N B A K C P )
+declare -a pcb=( '' r n b a k c p )
+
+declare -a pr=( ' － ' '(车)' '(马)' '(相)' '(仕)' '(帅)' '(炮)' '(兵)' '(　)' )
+declare -a pb=( ' － ' '[车]' '[马]' '[象]' '[士]' '[将]' '[炮]' '[卒]' '[　]' )
+
+DEFAULT_FEN="rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR"
+DEFAULT_BINIT="8979695949392919097717866646260600102030405060708012720323436383"
+
+##
+declare -a row9 row8 row7 row6 row5 row4 row3 row2 row1 row0
+## 把每行的初始局面都设定为无子；
+row9=( 1 1 1 1 1 1 1 1 1 )
+row8=( ${row9[@]} ); row7=( ${row9[@]} ); row6=( ${row9[@]} );
+row5=( ${row9[@]} ); row4=( ${row9[@]} ); row3=( ${row9[@]} );
+row2=( ${row9[@]} ); row1=( ${row9[@]} ); row0=( ${row9[@]} ); 
+
+_default_row () {
+    cat<<EOF
+# 标准开局中, row8=row5=row4=row1=空行无子
+# row9 为黑方底线；row0 为红方底线
+#
+### ----------------------
+## 黑方
+row9=( r n b a k a b n r )
+
+row8=( 1 1 1 1 1 1 1 1 1 )
+
+row7=( 1 c 1 1 1 1 1 c 1 )
+row6=( p 1 p 1 p 1 p 1 p )
+
+row5=( ${row8[@]} )
+row4=( ${row8[@]} )
+
+row3=( P 1 P 1 P 1 P 1 P )
+row2=( 1 C 1 1 1 1 1 C 1 )
+
+row1=( ${row8[@]} )
+
+row0=( R N B A K A B N R )
+#row0=( 车 马 相 仕 帅 仕 相 马 车 )
+## 红方
+### ======================
+EOF
+}
+
+
+#
+_default_fen () {
+    cat <<EOF
+  rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR
+EOF
+}
+
+#
+_default_binit () {
+    cat <<EOF
+  8979695949392919097717866646260600102030405060708012720323436383
+EOF
+}
+
+# 转换完成后，显示棋子代码布局图。主要用于确认棋局是否正确。
+_display_rows ()
+{
+    cat<<EOF
+    ${row9[*]}  9
+    ${row8[*]}  8
+    ${row7[*]}  7
+    ${row6[*]}  6
+    ${row5[*]}  +
+    ${row4[*]}  +
+    ${row3[*]}  3
+    ${row2[*]}  2
+    ${row1[*]}  1
+    ${row0[*]}  0
+EOF
+}
+
+#
+_tips01 () {
+cat<<EOF
+...
+EOF
+}
+
+
+# Usage: usage
+# Print the usage.
+_usage () {
+cat <<EOF
+Usage: `basename -- "$0"` [OPTION]
+输入中国象棋的东萍 UBB 动态棋盘的局面数据(DhtmlXQ_binit)，
+生成文本格式的棋局图
+
+  -v, --version    显示版本信息并退出
+  -h, --help       显示帮助信息并退出
+EOF
+}
+
+
+## other options
+for option in "$@"; do
+  case "$option" in
+    -h | --help)
+	  _usage 
+      	exit 0 ;;
+    -v | --version)
+	echo "$0" "$APPVER, ${UPDATE_DATE} updated, by Careone <emacslocale@126.com>"
+	
+	exit 0 ;;
+    
+    -*)
+	echo "Unrecognized option \`$option'" 1>&2
+	exit 1;;
+
+esac
+
+done
+
+echo -e "  $APPNAME $APPVER"
+
+### part 0 ###
+#[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+
+echo "请输入中国象棋 DhtmlXQ_binit 象棋局面数据。按[回车键]使用标准开局:"
+_default_binit
+
+echo -en "  "
+
+tput sc
+## Next:
+#tput cup "$CLINES" "$CCOL"
+
+## TAG 170: 
+while true; do
+    
+    read BINIT
+
+    if [ "$BINIT" = '' ]; then
+	BINIT="${DEFAULT_BINIT}"
+    elif [ "$BINIT" = '1234' ]; then
+	echo "  Exit." ; exit 0;
+    else :
+    fi
+
+#echo   "  $BINIT"
+
+# 光标归位
+#tput rc
+
+
+## 把局面数据转换成数组，共64个字符（代表红黑双方共32个棋子的坐标）。
+#  棋子顺序依次是：
+# 黑：车马象士将士象马车；2炮；5卒；
+# 红：车马相仕帅仕相马车；2炮；5兵；
+#
+# array bcode[@]: piece Code map to binit[@]. array id: 0-31
+declare -a binit=( `echo "$BINIT" | sed '/../s//& /g'` )
+declare -a bcode=( r n b a k a b n r c c p p p p p R N B A K A B N R C C P P P P P )
+declare -a new_yxp sort_yxp
+
+## 优化数组，去除无效数据（棋盘上不存在的棋子），
+#  并转存到新数组 sort_yxp，按坐标排序后(先行后列，即先Y后X，再棋子代码)，
+# 再分析数据；
+for n in `seq 0 31`; do
+    if [ "${binit[n]}" = "99" ]; then
+	continue;
+    else
+	x=`echo "${binit[n]}" | cut -c 1`
+	y=`echo "${binit[n]}" | cut -c 2`
+
+	if [ "${#new_yxp[@]}" -ge 1 ]; then
+	    new_yxp=( ${new_yxp[@]} $y$x${bcode[n]} )
+	else
+	    new_yxp=( $y$x${bcode[n]} )	    
+	fi
+	
+	sort_yxp=( `echo ${new_yxp[@]} | sort` )
+    fi
+
+done
+
+
+### ---
+if [ "$DEBUG" = 1 ]; then
+echo -e "sort_yxp:\n\t'${sort_yxp[@]}'\n\t#sort_yxp=${#new_yxp[@]}";
+
+echo "  debugNode L210: sleep 3"
+sleep 3;
+
+fi
+### ===
+
+## 把 DhtmlXQ_binit 中的棋子坐标写入数组 row9 - row0
+for yxp in "${sort_yxp[@]}"; do
+	x=`echo "$yxp" | cut -c 2`
+	y=`echo "$yxp" | cut -c 1`
+	p=`echo "$yxp" | cut -c 3`
+
+	#echo "  L240: x=$x; y=$y; p=$p; row9[$x]=${row9[x]}"
+	    case "$y" in
+		9)row9[x]="$p" ;;
+		8)row8[x]="$p" ;;
+		7)row7[x]="$p" ;;
+		6)row6[x]="$p" ;;
+		5)row5[x]="$p" ;;
+		4)row4[x]="$p" ;;
+		3)row3[x]="$p" ;;
+		2)row2[x]="$p" ;;
+		1)row1[x]="$p" ;;
+		0)row0[x]="$p" ;;
+		*)echo "  E220: bad XY for Piece $p: $x$y" 1>&2;
+		  echo "$BINIT" | grep --color=auto "$x$y"
+		  exit 0;
+		  ;;
+	    esac
+
+done
+
+
+# _display_rows
+## show in color; 47m = white background 
+echo "    ${row9[*]}  9"
+echo "    ${row8[*]}  8"
+echo "    ${row7[*]}  7"
+echo "    ${row6[*]}  6"
+echo -e "   \e[1;47m ${row5[*]} \e[0m +"
+echo -e "   \e[1;47m ${row4[*]} \e[0m +"
+echo "    ${row3[*]}  3"
+echo "    ${row2[*]}  2"
+echo "    ${row1[*]}  1"
+echo "    ${row0[*]}  0"
+
+echo
+
+#declare -a anyline
+
+### ///head end ###
+
+### body ###
+
+if [ "$BINIT" = "$DEFAULT_BINIT" ]; then
+    # 如果是标准开局，直接使用标准FEN，不需要进行转换
+    FEN="$DEFAULT_FEN"
+    
+else
+    XFEN="${row9[*]}/${row8[*]}/${row7[*]}/${row6[*]}/${row5[*]}/${row4[*]}/${row3[*]}/${row2[*]}/${row1[*]}/${row0[*]}"
+    FEN=`echo "$XFEN" | sed '/ /s///g;' | sed '/111/s//3/g'| sed '/333/s//9/g;/11/s//2/g' | sed '/332/s//8/g;/331/s//7/g;/33/s//6/g;/32/s//5/g;/31/s//4/g'`
+fi
+
+echo "  FEN: $FEN"
+tput rc
+
+done
+### ///body end ###
+exit 0;

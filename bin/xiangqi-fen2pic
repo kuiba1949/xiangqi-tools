@@ -1,0 +1,1534 @@
+#! /bin/bash
+# coding: utf-8
+# 2018-3-11 updated, by Careone
+# convert Xiangqi FEN data to picture,
+# and save to DIR ~/xiangqi/pic/
+#
+# filename: xiangqi-fen2pic
+# original filename: xiangqi-fen2pic.sh
+
+### head ###
+APPNAME="xiangqi-fen2pic"
+APPVER="1.2"
+
+#prefix="/usr/share/xiangqi-tools/themes"
+prefix="/usr/share/xiangqi/themes"
+SAVEDIR="$HOME/xiangqi/pic"
+
+## optional themes:
+# mono-40 (default) , mono-57 (hide); 
+# xiangqi-xuanfeng-26, xiangqi-xuanfeng-40; xiangqi-xuanfeng-54 (hide);
+# ccbridge-52;
+# wood3-50 (version 1.1 added)
+# gmchess (57x57, todo);
+
+
+declare -i BOARD_WIDTH=400 DEFAULT_PSIZE
+
+## add EVENT to 'top' or 'bottom' of picture
+## optional: top, bottom
+WHEREIS_EVENT=bottom
+
+
+## optional picture format to output: jpg, png, gif, bmp ...
+#  'jpg' is recommended and default.
+SUFFIX="jpg"
+
+## FOR ImageMagick command 'convert' to convert pictures
+RESIZE="100%"
+
+### 支持3种不同的模式来读取FEN：
+# file:   在命令行中使用 -f 选项，指定文件名。支持PGN/FEN格式的文本文件；
+# string: 在命令行中指定FEN文字；
+# input:  运行程序后，再手动输入FEN文字。支持连续多次输入。
+SRC_MODE=""  #optional: file, string, input
+
+#FEN_STR="rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR"
+DEFAULT_FEN="rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR"
+
+
+## preview new picture or not. 1=yes, 0=never
+declare -i PREVIEW=1  # 1/0. 完成后，是否显示图片
+declare -i FONTSIZE=12
+
+# ADD_FEN: =1/0. 是否在图片下方添加FEN文字
+ADD_FEN=''
+
+FONTFILE="/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
+## wqy-microhei.ttc  wqy-zenhei.ttc
+EVENT=""
+
+### for option: --list-fen
+FEN_DIR="/usr/share/xiangqi/fen"
+declare -i ID=1 N
+
+
+### for option: --file, --fen
+tmp_fen=`mktemp -u`
+declare -a fens 
+declare -a event
+declare -i LINES
+
+### PSIZE: 棋子大小尺寸。通过查看“黑将”的图片来确定。 
+## 棋盘尺寸大小：xx代表宽度，yy代表高度
+## x0, y0: 棋子在棋盘上的偏移量；
+declare -i PSIZE x0 y0 xx yy
+
+### -----------------------------
+## 标准FEN棋子代码: 数字1-9, rnbakcp(分英文大/小写两种);
+#  兼容性FEN棋子代码: ehEH(英文大/小写。某些象棋软件可能会用eE代表象，hH代表马);
+#  本程序自定义的FEN棋子代码: 数字0, uUxX(英文大/小写);
+
+# for option --random
+SAMPLE_FEN="/usr/share/xiangqi/fen/shiqingyaqu551.fen"
+
+## added in ver 1.2, 用于简化图片文件名为8位数字字符 + 图片扩展名
+
+	         
+## ---- debug options ---- ##
+DEBUG=0
+declare -i MAX
+## //debug options end ##
+
+LOG_DIR="$HOME/xiangqi/log"
+LOG_FILE="xiangqi-fen2pic.log"
+
+declare -i EID 
+declare -i INDEX TOTAL NUMBER=1
+
+# EID: Error ID, 1 -> 10
+
+## count how many FEN and pictures created:
+# INDEX, TOTAL (see TAG 170): for SRC_MODE 'file' and 'string',;
+# NUMBER: count for SRC_MODE 'input'
+
+if [ ! -d "$LOG_DIR" ]; then
+  mkdir -p "$LOG_DIR"
+fi
+
+#
+declare -i START_TIME="$(date +%s)"
+### theme DIR, and piece picture filenames
+
+## Themes from Xiangqi XuanFeng 6.2
+## piece size: large = 54*54; medium = 40x40; small = 26x26
+#PIC_D03="$prefix/xiangqi-xuanfeng-54"
+PIC_D03="/$prefix/xiangqi-xuanfeng-40"
+##PIC_D03="$prefix/xiangqi-xuanfeng-26"
+
+## array redp[@], blackp[@]: picture filenames for red/black piece
+#  array id: 1-7: Rook, kNight, Bishop, Advisor, King, Cannon, Pawn
+#  array id: 0: redp[0]=none.png                (means: no piece here)
+#  array id: 0: blackp[0]=unknown.png           (means: error, bad piece code)
+#  array id: 8: redp[8]=select.png   (or mask.png, for showing where last piece move from)
+#  array id: 8: blackp[8]=board.png (with grid lines)
+#
+declare -a redp blackp
+
+declare -a rows row9 row8 row7 row6 row5 row4 row3 row2 row1 row0
+
+## Array: rowpics[@]: picture filenames of row9 to row0; id: 0-9
+declare -a rowpics
+
+## Array: picname[@], piece filenames on board; id: 0-89
+declare -a picname
+
+### ver 1.0.1 added ###
+## 主要用于提供随机的FEN，可用于测试某个主题的图片效果
+# 数组 rfen, revent: (Random FEN/EVENT) 随机的FEN和棋局备注EVENT 
+declare -i RX RN
+declare -a rfen revent
+rfen[0]="1n1a1ab1C/4k4/4bR3/9/3r5/3c5/9/9/9/5K3"
+rfen[1]="4k4/9/9/9/9/2B6/2P6/N8/4A4/2rA1KB2"
+rfen[2]="2C1ka3/9/2n1b4/3N5/9/4N4/9/r3C4/9/4K4"
+rfen[3]="R1bk5/9/b1n6/9/2p6/P8/9/2n6/9/1cRAK4"
+rfen[4]="2bakab2/7r1/9/4C4/4p4/3R5/7n1/4C4/4p4/3K1cB2"
+rfen[5]="5aC2/4kc3/7RC/9/4pr3/9/9/4B4/4p4/2BK5"
+rfen[6]="2bakaR1C/9/9/6N2/6r2/9/4c4/9/3p5/4K4"
+
+revent[0]="例1. 借杀清障 (一将赶将；再将顺手吃士打通炮路；三将跟退绝杀)"
+revent[1]="例2. 马相兵-联防互保：相保马，马保兵，兵保相"
+revent[2]="例3. 明马暗炮（借将抽子: 红马五退六抽车；或红马六进七卧槽后，炮打黑马）"
+revent[3]="例4. 马炮关车；马双相关车"
+revent[4]="例5. 炮顶将 (红方：炮五进二，压将。再车六进五，铁门栓杀)"
+revent[5]="例6. 借炮架 (红方接下来走：车二平四，献车借作炮架)"
+revent[6]="例7. 献车捉车(明献暗捉): 红马三进一，伏卧槽马，再马后炮杀"
+###
+
+## default piece/board theme:
+#THEME_STR="mono-40"
+THEME_STR="ccbridge-52"  
+#THEME_DESC='默认主题'
+#PICDIR="$prefix/${THEME_STR}"
+
+## 不同的主题，对应的棋子图片文件名,有可能不一样
+
+case "$THEME_STR" in
+   ccbridge-52 | "")
+THEME_DESC='红黑单色棋子/黑白棋盘'
+redp=( none.png r1r.png r2n.png r3b.png r4a.png r5k.png r6c.png r7p.png select.png )
+blackp=( unknown.png b1r.png b2n.png b3b.png b4a.png b5k.png b6c.png b7p.png board.png )
+	;;
+    mono-40)
+## for theme mono-40
+THEME_DESC='黑白棋子/棋盘'
+redp=( none.png red_rook.png red_knight.png red_bishop.png red_advisor.png red_king.png red_cannon.png red_pawn.png select.png )	
+
+blackp=( unknown.png black_rook.png black_knight.png black_bishop.png black_advisor.png black_king.png black_cannon.png black_pawn.png board.png )
+	;;
+
+    xiangqi-xuanfeng-* | *)
+THEME_DESC='红黑单色棋子/木纹棋盘'
+redp=( none.png rr.png rn.png rb.png ra.png rk.png rc.png rp.png mask.png )
+blackp=( unknown.png br.png bn.png bb.png ba.png bk.png bc.png bp.png board.png )
+	;;
+	esac
+
+### TAG 1001: 
+
+UUID_STYLE="1"
+## 生成的图片文件的命名规则
+# =1： 8位数字文件名 + 图片格式扩展名，如 17av0001.jpg
+# =2：  年月日-时分秒 + 图片格式扩展名，如 2017-1231_2359-59.jpg
+
+## 隐藏的编号索引文件，记录上次的数字编号到多少了；
+pic_index_file="$HOME/xiangqi/pic/.pic_index"
+     
+declare -i NUM0
+# 需要把数字 NUM0, 强制补0转换成4位数 NUM4
+NUM4=''
+
+      ### 文件名命名规则 ###
+      # 方案1: 17av0001.jpg (推荐和默认的方案)
+      #   或者 17av0001_161533_bkt0Da6ykb.jpg (如果17av0001.jpg 已存在,
+      #   如索引文件 .pic_index 被删除或更改, 或者同一用户有多个进程同时运行，
+      #   可能产生重名的情况. 后面的6位数字代表时分秒,最后面的10位是随机码
+      #
+      # 方案2: 2017-1231_2359-59.jpg
+      # 方案3: 2017-1231_2359-59-x1x2x3x4x5.jpg
+      # 方案4: 17av0001_2017-1231_2359-59.jpg
+      # 方案5: 17av0001_2017-1231_2359-59-x1x2x3x4x5.jpg      
+
+### TAG 138: 
+## 提取随机字符, 保存到变量 STR_TMP (10位字符), 作为 UUID 最后面一段附加码
+#  最大限度防止 UUID 重码(即使是同一电脑同时运行多个进程).
+#  如: /tmp/tmp.Inqcwg4DVq --> Inqcwg4DVq
+#
+# STR_TMP=`mktemp -u`
+# ## 在即将保存对局结果时,再对 STR_TMP 取值,
+
+## 文件名 UUID 的编码规则1: (暂定方案, 未正式使用, 功能开发中)
+
+## UUID 的构成:
+# 当前方案: UUID = DATE4 (4位) + NUM4 (4位) 
+# 备用方案: UUID = DATE4 (4位) + NUM4 (4位) + STR_TMP (10位)
+#  如: UUID="17AA0001_1234567890" # 8+1+10=19位字符
+#
+## 第1组: PGN_SN (10位序列号附加码), 即用当前时间的UNIX纪元时字符串
+#  (通常为10位数字), 当成 UUID
+#  的前置字符串, 避免因为 UUID 序号重号产生的意外覆盖和PGN丢失.
+#
+## 第2组: DATE4 (4位)
+# 前4位为年月日代码; 后４位数字为序号0001-9999；
+#  超过9999，则以实际数字为准（允许超过4位数字）
+# DATE_2Y: 第1,2位字符: 17代表2017年
+# DATE_1M: 第3位字符:   1-9:代表1-9月; 小写字母abc: 10-12月
+# DATE_1D: 第4位字符:   1-9: 1-9日; 小写字母a-v: 10-31日
+
+## T177:
+
+	_convert_datetime () {
+### TODO: 生成10位随机字符串, 用作 UUID 的附加码(随机码), 防止重号
+STR_TMP=`mktemp -u | cut -d'.' -f2`
+
+declare -a datetime
+## 数组值示例 (2018年2月28日)： datetime[*]=( 18 02 28 )
+datetime=( $(date +'%y %m %d') )
+
+## 年份就只有2位数字，不用处理
+
+## 把月份的2位数字(01-12),转换为1位代码
+  case "${datetime[1]}" in
+      0[1-9])# 去掉前面多余的0, 只保留第2个数字
+	  datetime[1]=`echo "${datetime[1]}" | cut -c 2`
+	   ;;
+      10)datetime[1]='a' ;;
+      11)datetime[1]='b' ;;
+      12)datetime[1]='c' ;;            
+      *) datetime[1]=`echo "${datetime[1]}" | cut -c 2` ;;
+  esac    
+
+
+## 把 '日' 的2位数字(01-31), 转换为1位代码
+  case "${datetime[2]}" in
+      0[1-9]) # 去掉前面多余的0, 只保留第2个数字
+	  datetime[2]=`echo "${datetime[2]}" | cut -c 2`
+	   ;;
+
+      1[0-9]) datetime[2]=`echo "${datetime[2]}" | cut -c 2 | tr '0-9' 'a-j'`
+	   ;;
+      2[0-9]) datetime[2]=`echo "${datetime[2]}" | cut -c 2 | tr '0-9' 'k-t'`
+	   ;;
+        30]) datetime[2]='u' ;;
+        31]) datetime[2]='v' ;;        
+      *) # 去掉前面多余的0, 只保留第2个数字
+	  datetime[2]=`echo "${datetime[2]}" | cut -c 2`
+	;;
+    
+  esac
+## ====
+
+  DATE4="${datetime[0]}${datetime[1]}${datetime[2]}"
+
+  DEBUG=0 
+  if [ "$DEBUG" = 1 ]; then
+    echo "  L227:\tDATE4=$DATE4\nFILENAME='$FILENAME'"
+    sleep 1
+  fi
+
+}
+
+
+### --------
+#   --max 数字       最多连续生成多少张图片
+_usage () {
+cat<<EOF
+输入中国象棋的FEN格式串（象棋局面数据）, 生成棋局图片(默认为JPG格式)
+Usage: $APPNAME [OPTION] 
+       $APPNAME --fen FEN数据 
+       $APPNAME --file FEN/PGN棋谱文件 
+       $APPNAME --resize 百分比(或者图片宽度)  
+            (百分比范围:20%-1000%; 宽度范围:100-2000像素)
+
+  标准开局FEN数据:
+  rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR
+
+Options: 
+  -f, --file 文件名   从单个PGN/FEN文件中读取一组(或多组)FEN数据，并生成图片
+  -n, --fen FEN       从给出的一组FEN数据, 生成图片
+  -r, --resize X%     缩小或放大生成的图片（百分比范围: 20% - 1000%）,
+                      或者直接指定图片宽度（宽度范围: 100 - 2000 像素)       
+  -s, --suffix [jpg/gif/png]  指定生成图片的格式。默认为 jpg
+ 
+  -e, --event "棋局备注"     在棋盘下方添加棋局备注文字
+  --no-fen       不在图片下方添加FEN格式串文字 (只要棋子尺寸
+                 大于或等于40x40像素, 默认在图片下方添加FEN)
+
+  -p, --preview  [1/0]        是否显示生成的图片。1=显示(默认)，0=不显示;
+           如果一次性生成多张图片，则只显示第1张和最后1张
+ 
+  -t, --theme 主题    指定棋子棋盘主题。如果未指定主题，则显示可用的主题名。
+       支持的主题名称和数字序号：
+     1: mono-40 主题。黑白棋子/棋盘; 棋子大小: 40x40
+   * 2 (默认主题): ccbridge-52 主题。红黑单色棋子/黑白棋盘; 棋子大小: 52x52
+     3: xiangqi-xuanfeng-40 主题。木纹红黑棋子/木纹棋盘; 棋子大小: 40x40
+     4: xiangqi-xuanfeng-26 主题。木纹红黑棋子/木纹棋盘; 棋子大小: 26x26
+
+  -m, --random     随机生成一张象棋残局图片(选自《适情雅趣》残局谱550+1例)
+  -lf, --list-fen  列出象棋FEN示例文件 (目录: ${FEN_DIR}/ )  
+  -a, --about-fen  显示中国象棋FEN棋子字母代码含义, 和标准开局FEN数据
+  -x, --extra      显示额外的其它选项
+  -v, --version    显示版本信息并退出 
+  -h, --help       显示帮助信息并退出 
+
+See also:
+     命令: xiangqi-fen2text, xiangqi-ubb2fen, xiangqi-fen2pic
+
+Bugs: 
+请发送缺陷报告给 Careone <emacslocale@126.com>. 
+
+Homepage: 
+https://sourceforge.net/projects/emacslocale/files/xiangqi/ 
+EOF
+}  
+
+
+_default_fen () {
+    cat <<EOF
+  rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR
+EOF
+}
+
+
+_about_fen () {
+    cat <<EOF
+  FEN: Forsyth-Edwards Notation，通常称“FEN格式串”。
+  国际象棋或中国象棋的棋子局面数据。
+  在很多象棋软件中，通过输入FEN格式串，可以快速还原棋子局面图。
+
+  * 中国象棋PGN棋谱格式: 标准开局的FEN格式串(即“棋子局面数据”)
+ [FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+  
+  字母、数字和中国象棋棋子的对应规则：
+  ** 大写字母 RNBAKCP: 分别代表红方的: 车马相仕帅炮兵; 
+  ** 小写字母 rnbakcp: 分别代表黑方的：车马象士将炮卒; 
+  ** 数字1-9: 分别代表有1个或者连续多个空位。9即代表这一行无棋子。
+
+  R/r = 车 = Rook
+  N/n = 马 = kNight
+  B/b = 相/象 = Bishop
+  A/a = 仕/士 = Advisor
+  K/k = 帅/将 = King
+  C/c = 炮 = Cannon
+  P/p = 兵/卒 = Pawn
+  
+  FEN数据顺序：从上到下（从黑方底线，到红方底线, 共10行。每行用斜线/隔开）
+  每行的顺序是：从左到右
+ 
+  * 附: “UBB中国象棋”棋谱格式(也叫“东萍UBB动态棋盘”)的标准开局数据:
+ [DhtmlXQ_binit]8979695949392919097717866646260600102030405060708012720323436383[/DhtmlXQ_binit]
+
+  红黑双方32个棋子的XY坐标，共64个数字：从X8到X0(从左到右), Y9到Y0(从上到下)。
+  棋子对应关系和顺序：
+  ** (前面32个字符)黑方: 车马象士将士象马车；2个炮；5个卒
+  ** (后面32个字符)红方: 车马相仕帅相仕马车；2个炮；5个兵
+  ** 坐标99代表对应的棋子不存在(即被吃掉了); 
+EOF
+}
+
+_option_extra () {
+cat<<EOF
+Usage: $APPNAME [option]
+其它选项
+
+  --add-fen      强制在图片下方添加FEN格式串文字。
+                 (主要适用于棋子尺寸小于或等于26的主题)
+
+  --tips, --tips-gifs
+      显示图片转换命令 convert 的常用技巧，如生成 GIF 动画
+  
+其它：
+  完整的中国象棋标准开局FEN格式串(象棋局面数据):
+  [FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+
+EOF
+}
+
+
+## 2018-3-11 added: (version 1.2)
+## Imagemagick 的 convert 命令处理图片的常用技巧
+	_tips_convert () {
+cat<<EOF
+Imagemagick 的 convert 和 mogrify 命令处理图片的常用技巧
+
+convert 主要用来对图像进行格式转化，还可以做缩放、剪切、模糊、反转等操作。
+
+  convert -delay 0 *.bmp -loop 0 animated.gif
+  * 1 将当前目录下所有的bmp文件合成一个gif图片动画, 每帧间隔0ms, 重复播放。
+      -delay n     迟延n*10毫秒
+      -loop  n     播放n轮, 0表示不断地重复播放
+
+  convert -delay 50 frame1.gif frame1.gif frame1.gif -loop 0 animated.gif
+  * 2 将当前目录下的frame1.gif文件制作成animated.gif动画，其中
+       3个frame1.gif作为一组，进行循环播放，延迟500毫秒(即 0.5秒)。
+
+  convert -delay 50 frame1.gif -delay 100 frame1.gif -delay 150 frame1.gif -loop 0 -pause 200 animated.gif
+  * 3 在一轮播放之后暂停200毫秒(即 0.2秒)，再进行下一轮播放。
+  （注意：上面的命令有点长，但必须在同一行写完）
+
+  convert anim1.gif anim2.gif combined.gif
+  * 4 将两个动画文件合并成一个。
+
+  --------
+* 在图片 [上方]，添加文字。如果文字包含中文，
+  请使用 -font 参数指定字体文件的完整路径  
+  字体文件名称如: /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
+convert 背景图片 -font 字体文件名称 -pointsize 字体大小 -annotate +x+y "文字内容" 新图片
+
+* 在图片 [下方]，添加文字。如果文字包含中文，
+  请使用 -font 参数指定字体文件的完整路径
+convert 背景图片 -font 字体文件名称 -pointsize 字体大小 label:"文字内容" -gravity center -append 新图片
+
+  --------
+  
+* 21 把多张图片，按 [从左到右] 的顺序，拼接成一张新图片
+  convert -append 图片1 图片2 ... 新图片
+
+* 22 把多张图片，按 [从上到下] 的顺序，拼接成一张新图片
+  convert +append 图片1 图片2 ... 新图片
+
+* 23 在背景图片上，添加多张图片。支持指定图片的坐标偏移定位
+  convert 背景图片 {图片1 -geometry +x+y -composite} {图片2 ...} 新图片
+
+  --------
+
+* 格式转化：比如把 foo.jpg 转化为 foo.png： 
+convert foo.jpg foo.png
+  
+mogrify -format png *.jpg
+* 把目录下面所有的jpg文件转化为png格式。 
+
+* 把多张照片转化成pdf格式：
+convert *.jpg foo.pdf
+
+* 大小缩放: 比如我们要为图片做缩略图，可以这样
+convert -resize 100x200 foo.jpg thumbnail.jpg
+convert -resize 100 foo.jpg thumbnail.jpg
+convert -resize x200 foo.jpg thumbnail.jpg
+
+* 也可以用百分比
+convert -resize 50% foo.jpg thumbnail.jpg
+
+  注意：convert会自动地考虑在缩放图像大小时图像的高宽的比例，
+  也就是说着新的图像的高宽比与原图相同。 
+
+* 我们还可以批量生成缩略图。注意: 这个命令会覆盖原来的图片，请提前备份图片！
+mogrify -sample 80x60 *.jpg
+
+* 加边框: 在一张照片的四周加上边框，可以用 -mattecolor 参数，
+  比如某位同志牺牲了，我们需要为他做一张黑边框的遗像，可以这样：
+convert -mattecolor "#000000" -frame 60x60 yourname.jpg rememberyou.png
+  其中，"#000000"是边框的颜色，边框的大小为60x60 
+
+* 也可以这样加边框:
+convert -border 60x60 -bordercolor "#000000" yourname.jpg rememberyou.png
+
+* 在图片上加文字
+convert -fill green -pointsize 40 -draw 'text 10,50 "charry.org"' foo.png bar.png
+  上面的命令在距离图片的左上角10x50的位置，用绿色的字写下charry.org;
+  如果你要指定别的字体，可以用-font参数。 
+
+* 上下翻转
+convert -flip foo.png bar.png
+
+* 左右翻转
+convert -flop foo.png bar.png
+
+* 反色：形成底片的样子
+convert -negate foo.png bar.png
+
+* 单色：把图片变为黑白颜色
+convert -monochrome foo.png bar.png
+
+* 油画效果：把一张普通的图片，变成一张油画
+convert -paint 4 foo.png bar.png
+   
+EOF
+}
+
+	
+# TODO
+_log () {
+cat<<EOF
+# echo "`date` + `whoami` + $OPERATION "$@"" >> $LOGFILE
+#	   5 date>> $SAVE_FILE      
+#TIMESTAMP="$(date +"%Y-%m-%d_%H%M%S")"
+TIMESTAMP="$(date +"%Y-%m-%d")"
+	cp -f "$NEW_FILE" $NEW_FILE.$(date +"%Y-%m-%d.%H%M%S") 
+	# used for replace/update the last one @n with special repeats
+echo "* $(date +"%Y-%m-%d %H:%M:%S") \`$FILE'" >&7
+EOF
+}
+
+### ///head end ###
+
+### body ### 
+###---------------
+for option in "$@"; do
+
+    	case "$option" in
+    	 -h | --help)
+	 _usage
+	exit 0 ;;
+	
+    	 -e | --event)
+	   EVENT="$2"
+	   shift 2 ;;
+
+	-n | --fen)
+	  SRC_MODE="string"
+	  shift
+	  #FEN_STR="$1"
+	  #fens=( `grep "^\[FEN\ \"" "$a" | cut -d'"' -f2 | cut -d' ' -f1` )
+	;;
+
+
+    	 -f | --file)
+ 	   SRC_MODE="file"  #optional: file, string, input
+	   #SRC_FILE="$2"
+	   
+	   shift
+	   for a in "$@"; do
+	     echo "  * [file] $a"
+	     SRC_FILE="$a"
+
+	     ## 如果文件存在且不为空
+	     if [ -s "$a" ]; then
+	       :
+	     else echo -e "  * 错误 (E195): 无效的文件\n    '$a'" 1>&2
+	       continue;
+	     fi
+
+	     EVENT=`basename -- "$a"`
+	     ORIG_EVENT="$EVENT"
+
+	     #FEN_STR=`grep "^\[FEN\ \"" "$a" | cut -d'"' -f2 | cut -d' ' -f1`
+	     fens=( `grep "^\[FEN\ \"" "$a" | cut -d'"' -f2 | cut -d' ' -f1` )
+
+	     ## 因为[EVENT]标签文字中可能带有空格，可能导致一组数值，
+	     #  错误地分拆为数组 event 的多个值。因此不适用用 cut 直接取值。
+	     #  需要先保存到临时文件，再从临时文件读取某一行的值
+	#event=( `grep "^\[EVENT\ \"" "$a" | cut -d' ' -f2- | cut -d']' -f1` )
+	     tmp_event=`mktemp`  #tmp filename
+	     grep "^\[EVENT\ \"" "$a" | cut -d'"' -f2 > "$tmp_event"
+
+	## 
+        if [ "$DEBUG" = 1 ]; then
+	  echo "L215: #fens[@]=${#fens[@]}"
+	fi
+
+	##
+	     if [ "${#fens[@]}" -eq 1 ]; then
+		TOTAL=1; 
+		#REPEAT=1
+		INDEX=1
+		FEN_STR="${fens[0]}"
+	        EVENT="${event[0]}"
+	     elif [ "${#fens[@]}" -gt 1 ]; then
+		:
+		
+	     else TOTAL=1; FEN_STR="${DEFAULT_FEN}"
+	         echo "  * 错误 (E210): 没找到有效的 FEN 数据!" 1>&2
+	       continue; 
+             fi
+
+	     #echo -en "  FEN: "
+	     echo -en "  "
+	     echo "$FEN_STR" | tee "$tmp_fen"
+	     #echo
+
+	     ## 稍微暂停几秒，以便用户可以看到相关的FEN数据
+	     # sleep 3
+	   done
+	  # option --file end
+	    ;;
+
+    	 -a | --about-fen)
+	  _about_fen
+	  exit 0 ;;
+
+    	 -p | --preview)
+	   PREVIEW="$2"
+	   case "$PREVIEW" in
+	     1) PREVIEW=1 ;;
+	     0 | '' | *) PREVIEW=0 ;;
+	   esac
+	   shift 2 ;;
+
+    	 -r | --resize | -resize)
+	   case "$2" in
+	     [2-9][0-9]% | [1-9][0-9][0-9]% | 1000%)
+		RESIZE="$2" ;;
+		
+	     [1-9][0-9][0-9] | 1[0-9][0-9][0-9] | 2000)
+		## 其它合法范围值：图片宽度也可以是 100-2000像素
+		RESIZE="$2" ;;
+	     '' | *) 
+	echo -e "  * 警告(W299): 图片缩放比例超出范围或无效: $2 (有效范围: 20% - 1000%)" 1>&2
+	echo -e "    强制保留原始尺寸(即 100%)" 1>&2
+		RESIZE="100%"
+		 ;;
+	   esac
+
+	  shift 2 ;;
+
+    	 -lf | --list-fen)
+    	   echo "  列出象棋FEN示例文件..."
+
+    	   echo "  目录: $FEN_DIR/"
+    	   cd "$FEN_DIR"
+    	   echo "  -------- "
+    	   
+    	   for a in *.[fF][eE][nN]; do
+    	     declare -i N=`grep -n "FEN " "$a" | wc -l`
+    	      echo -e "  $ID $a\t[共 $N 局]"
+    	      let "ID += 1"      
+    	   done
+    	   
+    	   cd - &>/dev/null
+    	   exit 0
+    	 	;;
+    	 	
+    	 -m | --random)
+	## 随机生成一张象棋残局图片。如果没有找到样例文件 $SAMPLE_FEN, 
+	# 则从本程序内置的几组随机FEN数据中，随机选取一组   
+    	       if [ ! -e "${SAMPLE_FEN}" ]; then
+    	         FEN_STR="${TMP_FEN}"; 
+
+    	       else
+
+    	         echo "  随机生成一张象棋残局图片（选自《适情雅趣》残局谱，共551例）..."  
+    	         echo "  ${SAMPLE_FEN}"
+	         #echo
+	         
+    	       		let "RX = RANDOM % 551"
+    	       		  if [ "$RX" = 0 ]; then
+    	          	    RX=551
+    	         	  fi
+    	         FEN_STR=`grep "FEN " "${SAMPLE_FEN}" | cut -d'"' -f2 | cut -d' ' -f1 | sed -n "${RX}p"`
+    	         EVENT=`grep "EVENT" "${SAMPLE_FEN}" | cut -d'"' -f2 | sed -n "${RX}p"`
+    	       fi
+    	       echo "  FEN: ${FEN_STR}"
+    	       echo "  棋局备注: $EVENT"
+    	       echo
+    	       SRC_MODE="string"
+    	       shift	
+    	       break;
+    	 	;;
+    	 	
+    	 -s | --suffix)
+	   case "$2" in
+	     [jJ][pP][gG] | [jJ][pP][eE][gG]) SUFFIX="jpg" ;;
+	     [gG][iI][fF]) SUFFIX="gif" ;;
+	     [pP][nN][gG]) SUFFIX="png" ;;
+	     '' | *) echo "  * 警告(W300): 不支持的图片格式! 强制使用默认图片格式 jpg" 1>&2
+		SUFFIX="jpg" ;;
+	   esac
+	   shift 2 ;;
+
+    	 -t | --theme)
+	## 推荐的棋子图片文件命名规则
+	#redp=( `ls -1 $PICDIR/r[1-7][a-zA-Z].png` )
+	#blackp=( `ls -1 $PICDIR/b[1-7][a-zA-Z].png` )
+	  if [ "$#" -eq 1 ]; then
+	     echo "  可用的象棋棋子/棋盘主题 (主题目录: $prefix/ ):"
+	     #echo "  (主题目录: $prefix/)"
+	     ls -1 "$prefix" | sed '/^/s//\t/'
+	     exit 0;
+	  fi
+	
+	   case "$2" in
+	     1 | mono-40 | default)
+ 		THEME_STR="mono-40";
+		THEME_DESC='黑白棋子/棋盘'
+
+#redp=( none.png rr.png rn.png rb.png ra.png rk.png rc.png rp.png mask.png )
+#blackp=( none.png br.png bn.png bb.png ba.png bk.png bc.png bp.png board.png )
+
+redp=( none.png red_rook.png red_knight.png red_bishop.png red_advisor.png red_king.png red_cannon.png red_pawn.png select.png )	
+
+blackp=( unknown.png black_rook.png black_knight.png black_bishop.png black_advisor.png black_king.png black_cannon.png black_pawn.png board.png )
+		 ;;
+
+	     2 | 52 | ccbridge | ccbridge-52) 
+		THEME_STR="ccbridge-52";
+		THEME_DESC='红黑单色棋子/黑白棋盘'
+redp=( none.png r1r.png r2n.png r3b.png r4a.png r5k.png r6c.png r7p.png select.png )
+blackp=( unknown.png b1r.png b2n.png b3b.png b4a.png b5k.png b6c.png b7p.png board.png )
+		 ;;
+
+             3 | 40 | xiangqi-xuanfeng-40)
+		THEME_STR="xiangqi-xuanfeng-40";
+		THEME_DESC='红黑单色棋子/木纹棋盘'
+	
+		ADD_FEN=0
+redp=( none.png rr.png rn.png rb.png ra.png rk.png rc.png rp.png mask.png )
+blackp=( unknown.png br.png bn.png bb.png ba.png bk.png bc.png bp.png board.png )
+  ;;
+
+             4 | 26 | xiangqi-xuanfeng-26)
+		THEME_STR="xiangqi-xuanfeng-26";
+		THEME_DESC='红黑单色棋子/木纹棋盘'
+	
+		ADD_FEN=0
+redp=( none.png rr.png rn.png rb.png ra.png rk.png rc.png rp.png mask.png )
+blackp=( unknown.png br.png bn.png bb.png ba.png bk.png bc.png bp.png board.png )
+  ;;
+
+             '' | *)
+		THEME_STR="$2"
+		THEME_DESC=''
+		echo "  * 警告(W365): 未知的主题 ${THEME_STR}" 1>&2
+
+		if [ -e "$prefix/${THEME_STR}/rk.png" ]; then
+## 不同的主题，对应的棋子图片 ${redp[5]} 的文件名,有可能不一样
+		# piece picnames for themes: xiangqi-xuanfeng-* 
+redp=( none.png rr.png rn.png rb.png ra.png rk.png rc.png rp.png mask.png )
+blackp=( unknown.png br.png bn.png bb.png ba.png bk.png bc.png bp.png board.png )
+
+		elif [ -e "$prefix/${THEME_STR}/r5k.png" ]; then
+		# piece picnames for themes: xiangqi-xuanfeng-* 
+redp=( none.png r1r.png r2n.png r3b.png r4a.png r5k.png r6c.png r7p.png select.png )
+blackp=( unknown.png b1r.png b2n.png b3b.png b4a.png b5k.png b6c.png b7p.png board.png )
+
+		# piece picnames for themes: gmchess 
+		elif [ -e "$prefix/${THEME_STR}/red_king.png" ]; then
+redp=( none.png red_rook.png red_knight.png red_bishop.png red_advisor.png red_king.png red_cannon.png red_pawn.png select.png )	
+
+blackp=( unknown.png black_rook.png black_knight.png black_bishop.png black_advisor.png black_king.png black_cannon.png black_pawn.png board.png )
+		else
+		# piece picnames for themes: ourgames xiangqi ?
+redp=( none.png r1.bmp r2.bmp r3.bmp r4.bmp r5.bmp r6.bmp r7.bmp select.png )
+blackp=( unknown.png b1.bmp b2.bmp b3.bmp b4.bmp b5.bmp b6.bmp b7.bmp board.png )
+		fi
+
+		if [ ! -e "$prefix/${THEME_STR}/${redp[5]}" ]; then
+		  THEME_STR="mono-40"
+		  echo "  * 警告(W370): 强制使用主题 ${THEME_STR}" 1>&2
+		fi
+		 ;;
+
+	   esac
+	   shift 2
+	   ## option --theme end
+		 ;;
+
+    	 --no-fen)
+	   ADD_FEN=0
+	   shift ;;
+
+    	 -x | --extra)
+	   _option_extra
+	   exit 0 ;;
+	  
+    	 --add-fen)
+	   ADD_FEN=1
+	   shift ;;
+
+	--tips | --tips-gifs)
+	_tips_convert
+	exit 0 ;;
+	
+    	-v | --version)
+	  echo "$APPNAME $APPVER"
+	  exit 0 ;;
+
+    	-*)
+	  echo "Unrecognized option \`$option'" 1>&2
+	  exit 1 ;;
+    esac
+
+done
+
+
+
+
+### 检查1: 确认主题是否有效，是否有对应的棋子/棋盘图片存在
+## 如果不存在棋子红帅的图片(即数组值redp[5],通常对应的图片文件名应该是 r5k.png)，
+# 或者不存在棋盘网格背景图片(即数组值blackp[8], 通常对应的图片文件名应该是 board.png)，
+# 则判定主题无效，改为使用默认主题
+
+PICDIR="$prefix/${THEME_STR}"
+
+for a in "${redp[5]}" "${blackp[8]}"; do
+  if [ ! -e "$PICDIR/$a" ]; then
+    echo -e "  * 错误 (E390): 无效的主题或棋子图片:\n    $PICDIR/$a !\n    退出." 1>&2
+    exit 0
+  fi
+done
+
+### 检查2: 确认FEN的来源方式 (3选1: input, string, file)
+#   如果未输入参数，则默认为input):
+# 
+if [ "$DEBUG" = 1 ]; then
+  echo "T463: SRC_MODE=$SRC_MODE"
+fi
+
+## optional: SRC_MODE='string' (run command with FEN string)
+if [ "$SRC_MODE" = "file" ] || [ "$SRC_MODE" = "string" ]; then
+  :
+elif [ "$#" -ge 1 ] && [ "$SRC_MODE" != "file" ]; then
+  SRC_MODE="string"
+  FEN_STR="$1"
+
+  #for a in "$@"; do
+    #FEN_STR="$a"
+    #FEN_STR=`grep "^\[FEN\ \"" "$a" | cut -d'"' -f2 | cut -d' ' -f1`
+ #   fens=( `echo "$a" | grep "^\[FEN\ \"" | cut -d'"' -f2 | cut -d' ' -f1` )
+  #done
+else   SRC_MODE="input"
+fi
+
+### 
+if [ "$FONTSIZE" = 0 ]; then
+  FONTSIZE=12
+fi
+
+#echo "  convert Xiangqi FEN string to picture (*.$SUFFIX)..."
+#echo "  (Xiangqi Theme:   THEME_STR=$THEME_STR)"
+#echo "  (Picture Format:  SUFFIX=$SUFFIX)"
+#echo "  (Preview Picture: PREVIEW=$PREVIEW)" 
+
+echo "  转换中国象棋FEN格式串(棋子局面图)，生成图片( $SUFFIX 格式)..."
+echo "  [FEN来源:      SRC_MODE=$SRC_MODE ]"
+echo "  [象棋主题:     THEME_STR=$THEME_STR ]"
+echo "  [主题说明:     THEME_DESC=$THEME_DESC ]"
+echo "  [是否添加FEN:  ADD_FEN=$ADD_FEN ]" 
+echo "  [图片格式:     SUFFIX=$SUFFIX ]"
+echo "  [图片缩放比例: RESIZE=$RESIZE ]"
+echo "  [是否预览图片: PREVIEW=$PREVIEW (只显示新生成的第1张，和最后1张图片) ]" 
+echo
+
+## 强制暂停几秒，方便用户检查棋盘主题和参数是否输入异常或错误
+#sleep 2
+
+## debug
+if [ "$DEBUG" = 1 ]; then
+  echo "  L504: SRC_MODE=$SRC_MODE"
+  echo 
+  #sleep 10
+fi
+
+if [ ! -d "$SAVEDIR/" ]; then
+  mkdir -p "$SAVEDIR/"
+fi
+
+#echo "  * cd $PICDIR"
+cd "$PICDIR"
+
+PSIZE=`file "$PICDIR/${redp[5]}" 2>/dev/null | cut -d',' -f2 | sed '/\ /s///g' | cut -d'x' -f1`
+if [ "$PSIZE" = 0 ]; then
+  echo "  * 错误 (E385): 无效的棋子图片 '$PICDIR/${redp[5]}'! 无法确定棋子大小!" 1>&2
+fi
+
+## array board_xy[@]: board.png size, such as (x, y): 572 626 
+#  for piece size 54x54, X*10.6, Y*11.6
+declare -a board_xy=( `file "$PICDIR/${blackp[8]}" 2>/dev/null | cut -d',' -f2 | sed '/x/s///g'` )
+declare -i xx yy
+xx="${board_xy[0]}"; yy="${board_xy[1]}"; 
+
+let "x0 = xx - PSIZE * 9"
+let "y0 = yy - PSIZE * 10"
+
+let "x0 = x0 / 2"
+let "y0 = y0 / 2"
+
+#echo -e "\tboard.png size: ${board_xy[0]}x${board_xy[1]}"
+#echo -e "\tPiece Size:     ${PSIZE}x${PSIZE}\n\toffset:\t\tx0=$x0, y0=$y0"
+echo -en "  棋盘大小: ${board_xy[0]}x${board_xy[1]}"
+echo -e "  棋子大小: ${PSIZE}x${PSIZE}  偏移量: x0=$x0, y0=$y0"
+
+echo
+
+## debug
+if [ "$DEBUG" = 1 ]; then
+  echo "  L180: sleep 10"
+  sleep 10
+fi
+
+# array: extra_png; id: 0-2
+declare -a extra_png=( none.png select.png unknown.png )
+USER_THEME_DIR="$HOME/xiangqi/themes/$CUSTOM_THEME"
+
+# ----
+
+for p in "${extra_png[@]}"; do
+if [ ! -e "$PICDIR/$p" ]; then
+  echo "  ** 错误 (E470): 缺少图片 $p '$PICDIR/$p'"  1>&2 
+	## PSIZE: used to creat none.png (blank alpha .png picture)
+	#        for empty position. such as: 54x54, 57x57, 
+  if [ `whoami` = root ]; then
+    echo "  ** 信息: 强制生成图片 $p \n\t'$PICDIR/$p'"  1>&2 
+    convert -resize "$PSIZE" "$PIC_D03/$p" "$PICDIR/$p"
+  else
+	if [ ! -e "$PICDIR/$p" ]; then
+	  if [ ! -d "$USER_THEME_DIR" ]; then
+	    mkdir -p "$USER_THEME_DIR"
+	  fi
+	  #:
+    echo -e "  ** 信息: 强制生成图片 $p \n\t'${USER_THEME_DIR}/$p'"  1>&2
+    echo -e "     提示: 需要以 root 用户身份，把新图片 $p 复制到系统目录\n\t ${PICDIR}/" 1>&2	
+    	  convert -resize "$PSIZE" "$PIC_D03/$p" "${USER_THEME_DIR}/$p"
+	fi
+  fi
+fi
+
+done
+
+# ====
+
+#
+p="board.png"
+if [ ! -e "$PICDIR/$p" ]; then
+
+  #declare -i BOARD_WIDTH=400 DEFAULT_PSIZE
+
+  BOARD_WIDTH=`echo "scale=0;${PSIZE}*${x0}/${DEFAULT_PSIZE}" | bc`
+  DEFAULT_PSIZE=`file "$PIC_D03/${redp[5]}" 2>/dev/null | cut -d',' -f2 | sed '/\ /s///g' | cut -d'x' -f1`
+
+## 如果某个主题的棋子尺寸小于或等于40x40像素，默认情况下，
+# 不在棋盘下方添加FEN数据，以免因为FEN文字太长，导致图片宽度过大
+if [ "$ADD_FEN" = '' ]; then
+  if [ "$PSIZE" -le 40 ]; then
+    ADD_FEN=0
+  fi
+fi
+
+  if [ `whoami` = root ]; then
+    echo -e "  ** 信息: 强制生成图片 $p \n\t'$PICDIR/$p'"  1>&2 
+    convert -resize "$BOARD_WIDTH" "$PIC_D03/$p" "$PICDIR/$p"
+  else
+    echo -e "  ** 信息: 强制生成图片 $p \n\t'${USER_THEME_DIR}/$p'"  1>&2
+    echo -e "     提示: 需要以 root 用户身份，把新图片 $p 复制到系统目录 \n\t${PICDIR}/" 1>&2	
+    convert -resize "$BOARD_WIDTH" "$PIC_D03/$p" "${USER_THEME_DIR}/$p"
+  fi
+fi
+
+unset p
+
+#convert -size 800x900 -strip -colors 8 -depth 8 xc:none blank-board.png
+## usage:
+# convert 背景 {图片1 -geometry +x+y -composite} {图片2 ...} 新图片
+# example:
+#convert board.png bk.png -geometry +0+0 -composite bb.png -geometry +54+54 -composite done8.png; eog done8.png
+
+### part 0 ###
+#[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+
+echo "请输入中国象棋FEN格式串(象棋局面数据)。按[回车键]使用标准开局:"
+_default_fen
+
+if [ "$SRC_MODE" = '' ] || [ "$SRC_MODE" = 'input' ] ; then
+
+## TAG 706:
+#RN：可用的随机棋例的总个数。大约为7个。数量可能随版本变更而出现增/减；
+  RN="${#rfen[@]}" 
+  let "RX = RANDOM % RN"
+  echo -e "  也可以选用随机生成的FEN: \n  FEN: ${rfen[RX]}"
+  echo -e "  棋局备注: ${revent[RX]}"
+
+fi
+
+echo -en "\n  "
+
+## move to:
+#tput cup `tput lines` 2
+
+    ## Next:
+    #tput cup "$CLINES" "$CCOL"
+    tput sc
+
+## TAG 170: 
+#TOTAL=$MAX #for debug only
+INDEX=0
+TOTAL=1
+
+until [ "$INDEX" -ge "$TOTAL" ]; do
+#while true; do
+
+   if [ "$SRC_MODE" = "file" ]; then
+	TOTAL="${#fens[@]}";
+
+	for a in "${fens[@]}"; do
+		FEN_STR="${fens[INDEX]}"
+
+		let "INDEX += 1"
+		EVENT=`sed -n "${INDEX}p" "$tmp_event"`
+	echo -e "  * [$INDEX/$TOTAL] FEN: $FEN_STR"
+		EVENT="${ORIG_EVENT} [$INDEX/$TOTAL]  $EVENT"
+	if [ "$EVENT" != '' ]; then
+	  echo "  备注: $EVENT"
+	fi
+		break;
+		
+	done
+   elif [ "$SRC_MODE" = "string" ]; then
+        TOTAL="${#fens[@]}";
+
+	for a in "${fens[@]}"; do
+
+     		FEN_STR="${fens[INDEX]}"
+		let "INDEX += 1"
+
+	echo -e "  * [$INDEX/$TOTAL] FEN: $FEN_STR"
+		EVENT="[$INDEX/$TOTAL]"
+	if [ "$EVENT" != '' ]; then
+	  echo "  备注: $EVENT"
+	fi
+		break;
+		
+	done
+   else # [ "$SRC_MODE" = "input" ]
+	INDEX=0
+	read -p "* $NUMBER FEN: " FEN_STR
+	read -p "  备注: " EVENT
+	let "NUMBER += 1"
+   fi
+
+#if [ "$FEN_STR" = '' ]; then
+#  FEN_STR="$DEFAULT_FEN"
+#fi
+
+## 标准FEN棋子代码: 数字1-9, rnbakcp(分英文大/小写两种);
+#  兼容性FEN棋子代码: ehEH(英文大/小写。某些象棋软件可能会用eE代表象，hH代表马);
+#  本程序自定义的FEN棋子代码: 数字0, uUxX(英文大/小写);
+
+  case "$FEN_STR" in
+    '') FEN_STR="$DEFAULT_FEN"; LINES=10 ;;
+	
+    ## >=11 lines: too many and error
+    # */*/*/*/*/*/*/*/*/*/*) 
+     [0-9rnbakcpRNBAKCPehEHuUxX]*/*/*/*/*/*/*/*/*/*/*)
+     LINES=`echo "$FEN_STR" | sed '/\//s//&\n/g' | wc -l`
+    echo -en "  "
+    echo -e "* $(date +'%Y-%m-%d %H:%M:%S')\n  [FEN \"$FEN_STR\"]\n** \e[1;31m错误 (E590)\e[0m: 棋子行数大于10行。实为${LINES}行。\n" | tee -a "$LOG_DIR/$LOG_FILE"
+	;;
+
+    ##10 lines: OK	
+    # */*/*/*/*/*/*/*/*/*)
+    [0-9rnbakcpRNBAKCPehEHuUxX]*/*/*/*/*/*/*/*/*/*)
+      LINES=10	;;
+
+	*) LINES=`echo "$FEN_STR" | sed '/\//s//&\n/g' | wc -l`
+          echo -en "  "
+          echo -e "* $(date +'%Y-%m-%d %H:%M:%S')\n  [FEN \"$FEN_STR\"]\n** \e[1;31m错误 (E591)\e[0m: 棋子行数少于10行。实为${LINES}行。\n"  | tee -a "$LOG_DIR/$LOG_FILE"
+	;;
+  esac
+
+if [ "$DEBUG" = 1 ]; then
+echo "  L530: #sleep 10"
+#sleep 10
+fi
+
+#rows=( `echo "$FEN_STR" | sed '/\//s///g;/9/s//111111111/g;/8/s//11111111/g;/7/s//1111111/g;/6/s//111111/g;/5/s//11111/g;/4/s//1111/g;/3/s//111/g;/2/s//11/g' | sed '/./s//& /g'` )
+#
+## updated 2018-2-11, ver 0.4.1
+# 把数组 rows[@] 切成10组数值（每个数值应有9个字符），
+# 依次对应单行的数组 row9[@] - row0[@]
+rows=( `echo "$FEN_STR" | sed '/\//s//\ /g;/9/s//111111111/g;/8/s//11111111/g;/7/s//1111111/g;/6/s//111111/g;/5/s//11111/g;/4/s//1111/g;/3/s//111/g;/2/s//11/g'` )
+
+## 检查数组 rows[@] 值的个数是否是10个（对应棋盘上的从上到下的
+#  10行棋子 row9 -> row0）。如果小于或大于10,报错，并输出到日志 log
+  if [ "${#rows[@]}" -eq 10 ]; then :
+
+  elif [ "${#rows[@]}" -lt 10 ]; then
+	#echo "$(date +%s)"
+    echo -e "* $(date +"%Y-%m-%d %H:%M:%S")\n  [FEN \"$FEN_STR\"]\n** \e[1;31m错误 (E620)\e[0m: 棋子行数少于10行。实为${#rows[@]}行。[row9 -> row0]\n" | tee -a "$LOG_DIR/$LOG_FILE"
+
+  else # [ "${#rows[@]}" -gt 10 ];
+    echo -e "* $(date +"%Y-%m-%d %H:%M:%S")\n  [FEN \"$FEN_STR\"]\n** \e[1;31m错误 (E621)\e[0m: 棋子行数大于10行。实为${#rows[@]}行。[row9 -> row0]\n" | tee -a "$LOG_DIR/$LOG_FILE"
+  fi
+
+### DEBUG
+if [ "$DEBUG" = 1 ]; then
+  echo "  debug L330: #sleep 10"
+  #sleep 10
+fi
+### ///DEBUG
+
+## 把数组 row9[@] - row0[@] 切成9个数值，对应每行的单个棋子代码
+row9=( `echo ${rows[0]} | sed '/./s//&\ /g'` )
+row8=( `echo ${rows[1]} | sed '/./s//&\ /g'` )
+row7=( `echo ${rows[2]} | sed '/./s//&\ /g'` )
+row6=( `echo ${rows[3]} | sed '/./s//&\ /g'` )
+row5=( `echo ${rows[4]} | sed '/./s//&\ /g'` )
+
+row4=( `echo ${rows[5]} | sed '/./s//&\ /g'` )
+row3=( `echo ${rows[6]} | sed '/./s//&\ /g'` )
+row2=( `echo ${rows[7]} | sed '/./s//&\ /g'` )
+row1=( `echo ${rows[8]} | sed '/./s//&\ /g'` )
+row0=( `echo ${rows[9]} | sed '/./s//&\ /g'` )
+
+### 把数组 rows 切分成90个数值（对应棋盘上90个点位）
+## 如果数据错误：缺少行数（正常应为10行），
+## 把最后一行用错误图片 unknown.png 标识区分
+rows=( `echo "${rows[*]}" | sed '/./s//& /g'` )
+
+if [ "$DEBUG" = 1 ]; then
+  echo "L290: #rows[@] = ${#rows[@]}"
+  #sleep 10;
+fi
+
+## 检查数组 row9 - row0 数值个数是否是9个。
+#  如果多数或少数，报错并写入 log 
+
+echo "  检查 FEN 格式串(棋子局面数据)的有效性..."
+
+EID=1;
+# EID: Error ID, 1 -> 10
+
+declare -a piece_count=( ${#row9[@]} ${#row8[@]} ${#row7[@]} ${#row6[@]} ${#row5[@]} ${#row4[@]} ${#row3[@]} ${#row2[@]} ${#row1[@]} ${#row0[@]} )
+
+
+## echo -e \e[1;31m ERROR \e[0m  
+#  show errors in Red color (31) 
+
+for a in `seq 0 9`; do
+  if [ "${piece_count[a]}" -eq 9 ]; then
+	:
+  elif [ "${piece_count[a]}" -lt 9 ]; then
+    WHICH=`echo row$a | tr 0-9 '9876543210'`
+    echo -e "* $(date +"%Y-%m-%d %H:%M:%S")\n  [FEN \"$FEN_STR\"]\n** \e[1;31m错误${EID} (E800)\e[0m: $WHICH 单行棋子数量少于9个 (row9 -> row0)\n" | tee -a "$LOG_DIR/$LOG_FILE"
+    let "EID += 1"
+
+  else #  [ "${piece_count[a]}" -gt 9 ]; then
+    WHICH=`echo row$a | tr 0-9 '9876543210'`
+    echo -e "* $(date +"%Y-%m-%d %H:%M:%S")\n  [FEN \"$FEN_STR\"]\n** \e[1;31m错误${EID} (E801)\e[0m: $WHICH 单行棋子数量多于9个 (row9 -> row0)\n" | tee -a "$LOG_DIR/$LOG_FILE"
+    let "EID += 1"
+
+  fi
+done
+
+## ==============
+
+## debug
+if [ "$DEBUG" = 1 ]; then
+    echo -e "  red:\t${redp[*]}"
+    echo -e "  black:\t${blackp[*]}"
+    
+    echo -e "  L36: rows:\n"
+    echo -e "  ${rows[@]}"
+fi
+## //debug end
+
+
+## 强制定义第一个数组值 rows[0] ，方便编程处理。后面取值时，
+# 直接取值 rows[1] -> rows[90], 忽略 rows[0]  
+unset picname
+picname[0]=none.png
+
+declare -i COUNT="${#rows[@]}"
+let "COUNT -= 1"
+
+for a in `seq 0 $COUNT` ; do
+   case "${rows[a]}" in
+      1)picname=( ${picname[@]} ${redp[0]} ) ;;
+
+      R)picname=( ${picname[@]} ${redp[1]} ) ;;
+      N)picname=( ${picname[@]} ${redp[2]} ) ;;
+      B)picname=( ${picname[@]} ${redp[3]} ) ;;
+      A)picname=( ${picname[@]} ${redp[4]} ) ;;
+      K)picname=( ${picname[@]} ${redp[5]} ) ;;
+      C)picname=( ${picname[@]} ${redp[6]} ) ;;
+      P)picname=( ${picname[@]} ${redp[7]} ) ;;
+
+      r)picname=( ${picname[@]} ${blackp[1]} ) ;;
+      n)picname=( ${picname[@]} ${blackp[2]} ) ;;
+      b)picname=( ${picname[@]} ${blackp[3]} ) ;;
+      a)picname=( ${picname[@]} ${blackp[4]} ) ;;
+      k)picname=( ${picname[@]} ${blackp[5]} ) ;;
+      c)picname=( ${picname[@]} ${blackp[6]} ) ;;
+      p)picname=( ${picname[@]} ${blackp[7]} ) ;;
+
+      0 | X | x)picname=( ${picname[@]} ${redp[8]} ) ;;
+
+      u | U | '' | *) #error, unknown or bad piece code
+	picname=( ${picname[@]} ${blackp[0]} ) ;;
+
+   esac
+
+done
+
+## debug
+if [ "$DEBUG" = 1 ]; then
+    echo -e "  L75: #picname[@] = ${#picname[@]}\n"
+    echo -e "  ${picname[@]}"
+
+    #sleep 10
+fi
+## //debug end
+
+echo 
+unset row9 row8 row7 row6 row5 
+unset row4 row3 row2 row1 row0
+
+declare -i X=0 Y=0
+
+Y="${piece_count[0]}"
+
+# id: 1-9
+#echo "L410: X=$X Y=$Y"; 
+# seq [OPTION]... FIRST INCREMENT LAST
+## 有必要强行指定 seq 的增量为+1。某些情况下，因为FEN数据错误,
+#  出现某行的棋子总数为0, 导致seq的起始数字,会大于结束数字
+#  引起不可预知的棋子分布错位（或错行）
+
+#if [ "$LINES" -eq 0 ]; then
+#  row9=( ${blackp[0]} ${blackp[0]} )
+#else
+
+for a in `seq 1 1 $Y`; do
+row9=( ${row9[@]} ${picname[a]}  )
+done
+#fi
+
+# id: 10-18
+let "X = Y + 1"; let "Y = Y + piece_count[1]"; 
+#echo "L415: X=$X Y=$Y"; #sleep 10
+for a in `seq $X 1 $Y`; do
+row8=( ${row8[@]} ${picname[a]}  )
+done
+
+# id: 19-27
+let "X = Y + 1"; let "Y = Y + piece_count[2]"; 
+#echo "L425: X=$X Y=$Y"; #sleep 10
+for a in `seq $X 1 $Y`; do
+row7=( ${row7[@]} ${picname[a]}  )
+done
+
+# id: 10-18
+let "X = Y + 1"; let "Y = Y + piece_count[3]"; 
+#echo "L435: X=$X Y=$Y"; 
+for a in `seq $X 1 $Y`; do
+row6=( ${row6[@]} ${picname[a]}  )
+done
+
+# id: 37-45
+let "X = Y + 1"; let "Y = Y + piece_count[4]"; 
+#echo "L440: X=$X Y=$Y"; 
+for a in `seq $X 1 $Y`; do
+row5=( ${row5[@]} ${picname[a]}  )
+done
+
+# id: 46-54
+let "X = Y + 1"; let "Y = Y + piece_count[5]"; 
+#echo "L445: X=$X Y=$Y"; 
+for a in `seq $X 1 $Y`; do
+row4=( ${row4[@]} ${picname[a]}  )
+done
+
+# id: 55-63
+let "X = Y + 1"; let "Y = Y + piece_count[6]"; 
+#echo "L455: X=$X Y=$Y"; 
+for a in `seq $X 1 $Y`; do
+row3=( ${row3[@]} ${picname[a]}  )
+done
+
+# id: 64-72
+let "X = Y + 1"; let "Y = Y + piece_count[7]"; 
+#echo "L460: X=$X Y=$Y"; 
+for a in `seq $X 1 $Y`; do
+row2=( ${row2[@]} ${picname[a]}  )
+done
+
+# id: 73-81
+let "X = Y + 1"; let "Y = Y + piece_count[8]"; 
+#echo "L465: X=$X Y=$Y"; 
+for a in `seq $X 1 $Y`; do
+row1=( ${row1[@]} ${picname[a]}  )
+done
+
+# id: 81-90
+let "X = Y + 1"; let "Y = Y + piece_count[9]"; 
+#echo "L475: X=$X Y=$Y"; #sleep 10
+for a in `seq $X 1 $Y`; do
+row0=( ${row0[@]} ${picname[a]}  )
+done
+
+
+### TAG 765:
+## 如果数组 rows 数据错误, 如缺少行数（正常应为10行），
+## 把最后一行用错误图片 unknown.png 标识区分
+case "$LINES" in
+  10):  ;;
+  [0-9]) row0=( ${blackp[0]} ${blackp[0]} ) ;;
+  *) # >= 10
+	: ;;
+esac
+
+
+## 
+#unset row9[9] row8[9] row7[9] row6[9] row5[9] 
+#unset row4[9] row3[9] row2[9] row1[9] row0[0]
+
+# 把每行的9个棋子（含空位），合并成一张图片。共10行。
+# 从左到右，从上（row9[@],黑方底线）到下（row0[@],红方底线）
+
+pic9=$(mktemp).png
+pic8=$(mktemp).png
+pic7=$(mktemp).png
+pic6=$(mktemp).png
+pic5=$(mktemp).png
+
+pic4=$(mktemp).png
+pic3=$(mktemp).png
+pic2=$(mktemp).png
+pic1=$(mktemp).png
+pic0=$(mktemp).png
+
+## declare -a rowpics
+## filenames of row9 to row0
+rowpics=( "$pic9" "$pic8" "$pic7" "$pic6" "$pic5" "$pic4" "$pic3" "$pic2" "$pic1" "$pic0" )
+
+#cd "$PICDIR"
+
+convert +append ${row9[@]} "$pic9"
+convert +append ${row8[@]} "$pic8"
+convert +append ${row7[@]} "$pic7"
+convert +append ${row6[@]} "$pic6"
+convert +append ${row5[@]} "$pic5"
+
+convert +append ${row4[@]} "$pic4"
+convert +append ${row3[@]} "$pic3"
+convert +append ${row2[@]} "$pic2"
+convert +append ${row1[@]} "$pic1"
+convert +append ${row0[@]} "$pic0"
+
+PIC_TMP=$(mktemp).png
+
+    # 把10行棋子图，合并成一张图片
+    convert -append ${rowpics[@]} "$PIC_TMP"
+
+    # 为棋子图添加棋盘背景网格线
+    # convert 背景 {图片1 -geometry +x+y -composite} {图片2 ...} 新图片
+    convert "${blackp[8]}" "$PIC_TMP" -geometry +${x0}+${y0} -composite "$PIC_TMP"
+
+    ## 最后，把图片从PNG格式转换为JPG格式，以减少图片尺寸。
+    #  大约可以缩小到1/4 - 1/3
+    ## 572x626, png: ~= 500k ****
+    ## 572x626, gif: ~= 210k **
+    ## 572x626, jpg: ~= 130k *
+
+    ## 文件名命名规则：年月日-时分秒.jpg, 如: 2018-0124_2359-59.jpg
+
+## 强制延时1秒。防止批量生成图片时，因为多个图片都在同一秒生成，
+#  产生多个同名文件而出现同名文件覆盖或丢失。
+
+if [ "$(date +%s)" -eq "$START_TIME" ]; then
+    sleep 1
+fi
+
+## TAG 1270: 确定生成的图片文件名的命名规则
+if [ "$UUID_STYLE" = 2 ]; then
+#PIC_FILE="`date +%Y-%m%d_%H%M-%S`_${STR_TMP}.jpg"
+  PIC_FILE="$SAVEDIR/`date +%Y-%m%d_%H%M-%S`.$SUFFIX"
+
+elif [ "$UUID_STYLE" = 1 ]; then
+## 文件名命名规则示例: 17cv0001.jpg
+
+  ### 读取文件
+if [ -s "$pic_index_file" ]; then
+  NUM0=`grep "^[1-9]" "$pic_index_file" | head -1 `
+  case "$NUM0" in
+  0) NUM0=1 ;;
+  *) :  	;;
+  esac	
+else NUM0=1; echo "$NUM0" > "$pic_index_file"  
+fi
+
+
+### ---------------- TAG 1140:
+
+      ## 把数字 NUM0 强制转换为4位数。超过4位数，取实际数字。
+      # 其它可选方案：
+      #   如果原数值大于4位：截取最后4位（暂未实现），或者：
+      #  如果累计后大于 9999,重新从 0001 开始编号(暂未实现).
+      #     
+      #  注1: printf "%4s" 12345 的效果是保证不低于4位数.超过4位,显示全部
+      #  注2: 当前代码是保证不低于4位数,5位数以上的,直接提取,不需要用 printf
+      #       转换；
+
+      ## 如果数字位数低于4位数,如 1-999, 需要在序号数字前补0,变成4位数,
+      #  方便按文件名排序
+
+        if [[ "$NUM0" -le 999 ]]; then
+	    NUM4=`printf "%4s" "$NUM0" | sed '/ /s//0/g'`
+
+	    #echo "  L1488: PGN_4NUM=$PGN_4NUM; NUM=$NUM"
+	    
+        elif [[ "$NUM0" -gt 9999 ]]; then
+           ##  方案A: 大于9999,重新从0开始编号
+	   #NUM4="0001"; NUM0=1; 
+	   
+	   #  方案B: 大于9999,按实际数字继续编号
+	   NUM4="$NUM0" 
+	  ## 每个对局结束后,或者在退出程序前,需要把 NUM0 的数值(即序号)
+	  #  写入配置文件. 这样下次运行程序,会接着上次的编号. 
+	  
+        else # 如果 NUM0 是4位数字，不用进行补0对齐处理； 
+	  NUM4="$NUM0" ;
+        fi
+ 
+	_convert_datetime
+
+  PIC_FILE="$SAVEDIR/${DATE4}${NUM4}.$SUFFIX"
+  
+  #DEBUG=1 
+  if [ "$DEBUG" = 1 ]; then
+    echo -e "  L1307:\tPIC_FILE='$PIC_FILE'"
+    sleep 1
+  fi      
+## ------------
+else # 等同于 UUID_STYLE=2
+  #PIC_FILE="`date +%Y-%m%d_%H%M-%S`_${STR_TMP}.jpg"
+  PIC_FILE="$SAVEDIR/`date +%Y-%m%d_%H%M-%S`.$SUFFIX"
+fi
+
+    if [ "$PIC_FILE" != "$PIC_TMP" ]; then    
+      convert "$PIC_TMP" "$PIC_FILE"
+    else PIC_FILE="$PIC_TMP"
+    fi
+    
+### 在图片上方添加标题，在下方添加FEN格式串数据
+## -------------
+## 在图片中添加文字注释
+# convert 001.png -pointsize 30 -draw "text 0,20 'some text'" 002.png  
+#
+## 从文件text.txt中读取文字，指定颜色，字体，大小，位置：
+# convert 001.jpg -font xxx.ttf -fill red -pointsize 48 -annotate +50+50 @text.txt 002.jpg  
+#
+##文件名标签添加在中间：
+# convert 001.png -fill red -pointsize 30 -annotate +10+141 "EVENT" 002.png  
+#
+## 如果想给文字加上方框:
+# convert 001.png -fill "#00ffff" -draw "rectangle 5,128,114,145" -fill red -annotate +10+141 "EVENT" 002.png  
+#    
+## 文件名标签添加在底部
+# convert 001.png -background bg.png -pointsize 30  label:"EVENT" -gravity Center -append 002.png  
+#
+# –gravity（center south north east west northeast southeast 等等）了，它会自动调整位置
+## --------------
+
+    if [ "$EVENT" != '' ]; then
+#convert "$PIC_FILE" -font "$FONTFILE" -fill red -pointsize "$FONTSIZE" -annotate +${x0}+${FONTSIZE} "$EVENT" "$PIC_FILE"
+
+## add EVENT to 'top' or 'bottom' of picture. default is 'bottom'
+## optional: top, bottom
+# WHEREIS_EVENT=bottom
+
+  case "$WHEREIS_EVENT" in
+    top)
+# style 1: add EVENT to 'top' of picture
+convert "$PIC_FILE" -font "$FONTFILE" -pointsize "$FONTSIZE" -annotate +${x0}+${FONTSIZE} "$EVENT" "$PIC_FILE"
+	;;
+
+    bottom | *)	
+# style 2: add EVENT to 'bottom' of picture
+convert "$PIC_FILE" -font "$FONTFILE" -pointsize "$FONTSIZE" label:"$EVENT" -gravity center -append "$PIC_FILE"
+	;;
+  esac
+
+    fi
+
+    if [ "$ADD_FEN" != 0 ]; then
+convert "$PIC_FILE" -pointsize "$FONTSIZE" label:"FEN: $FEN_STR" -gravity center -append "$PIC_FILE"
+    fi
+
+## 缩小或放大图片
+    if [ "$RESIZE" != "100%" ]; then
+echo "  按比例缩放图片( $RESIZE )..."
+#convert "$PIC_FILE" -scale "$RESIZE" "$PIC_FILE"
+convert "$PIC_FILE" -resize "$RESIZE" "$PIC_FILE"
+    fi
+
+    # preview picture
+    if [ -e "$PIC_FILE" ]; then
+ 	#echo "  new picture: $PIC_FILE"
+ 	echo "  生成图片: $PIC_FILE"
+	#let "INDEX += 1"
+
+      if [ "$DEBUG" = 1 ]; then
+	echo "  --------- "
+	ls -l "$PIC_FILE";	file "$PIC_FILE"
+      fi
+
+	if [ "$PREVIEW" = 1 ]; then
+	  if [[ "$INDEX" = [01] ]] || [ "$INDEX" = "$TOTAL" ]; then
+	    xdg-open "$PIC_FILE" &
+	  fi
+  	fi
+    else echo "  ** 错误 (E970): 找不到图片 ($PIC_FILE)" 1>&2
+	 exit 0
+    fi
+echo; tput rc;
+
+
+	#let "INDEX += 1"
+### ///TAG 170: End for while ...do;
+	let "NUM0 += 1"
+	echo "$NUM0" > "$pic_index_file"
+done
+
+cd - &>/dev/null
+exit 0
+

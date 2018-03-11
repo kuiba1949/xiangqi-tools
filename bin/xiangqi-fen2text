@@ -1,0 +1,383 @@
+#! /bin/bash
+# coding: utf-8
+
+### filename: fen2text
+### original filename: xiangqi-fen2text.sh
+# by Careone <emacslocale@126.com>
+
+### DEFINES ###
+APPVER="0.2"
+UPDATE_DATE="2018-1-23"
+APPNAME="fen2text"
+
+APPDIR="$HOME/xiangqi/$APPNAME"
+
+## DEBUG SWITCH
+DEBUG=0
+## ///DEBUG SWITCH///
+
+
+## output option ##
+
+ROW_TAIL_STYLE=2
+## 见 TAG 149: switch ROW_TAIL_STYLE:
+# 是否在每行后面显示数字序号:
+# 0=不显示；1=显示；
+# 2=默认方案。显示数字，但双方河界的两行不显示数字，改为显示加号+；
+
+TEXT_STYLE="newsmth"
+#TEXT_STYLE=1
+
+# 见 TAG 235: 1/2
+# 2, newsmth: for www.newsmth.net
+# 1 or any: default
+
+## ///output option///
+
+
+## array id: 0-7. and 0 used for BLANK;
+# pr[@], pb[@]:   Piece of Red/Black
+# pcr[@], pcb[@]: Piece Code of Red/black
+
+RED="红方"
+BLACK="黑方"
+declare -a pcr=( '' R N B A K C P )
+declare -a pcb=( '' r n b a k c p )
+
+declare -a pr=( ' － ' '(车)' '(马)' '(相)' '(仕)' '(帅)' '(炮)' '(兵)' '(　)' )
+declare -a pb=( ' － ' '[车]' '[马]' '[象]' '[士]' '[将]' '[炮]' '[卒]' '[　]' )
+
+DEFAULT_FEN="rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR"
+
+_default_fen () {
+    cat <<EOF
+  rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR
+EOF
+}
+
+
+_tips01 () {
+cat<<EOF
+技巧：如果需要在空位标注下一步或者上一步的走棋位置，或者表示
+     让子的棋局，可以在FEN格式串中，使用特殊的棋子代码
+     （提醒：以下代码并不是标准FEN格式，仅适用于本程序）
+  0, X    大写字母X，或者数字0：(红方) 下一步或上一步的走棋位置
+  x       小写字母x：           [黑方] 下一步或上一步的走棋位置
+EOF
+}
+
+# Usage: usage
+# Print the usage.
+_usage () {
+cat <<EOF
+Usage: `basename -- "$0"` [OPTION]
+输入中国象棋FEN格式串(象棋局面数据)，生成文本格式的棋局图
+  -m, --text-mode [参数]    指定输出文本的格式
+     1: 默认格式；
+     2, newsmth: 适用于水木清华BBS发贴的文本格式(优化排版对齐效果)
+
+  -e, --row-end [参数]      在每一行的后面，是否添加数字编号
+     0=不添加；1=添加数字；
+     2=默认方案。添加数字，但是双方的河界数字编号用加号+代替
+
+  -v, --version    显示版本信息并退出
+  -h, --help       显示帮助信息并退出
+EOF
+}
+
+_todo001 () {
+cat<<EOF
+[TODO] 可用于转换 “东萍UBB DhtmlXQ 动态棋盘”数据为 FEN 数据 
+
+echo "　　 0　　1　　2　　3　　4　　5　　6　　7 "
+
+echo -en "  * "
+for r in `seq 0 7`; do
+  echo -en "${pr[r]} "
+done
+echo;
+
+echo -en "  * "
+for b in `seq 0 7`; do
+  echo -en "${pb[b]} "
+done
+echo;
+EOF
+}
+
+
+### /DEFINES ###
+
+### BODY ###
+
+## other options
+for option in "$@"; do
+  case "$option" in
+    -h | --help)
+	  _usage 
+      	exit 0 ;;
+    -v | --version)
+	echo "$0" "$APPVER, ${UPDATE_DATE} updated, by Careone <emacslocale@126.com>"
+	echo "输入中国象棋FEN格式串(象棋局面数据)，生成文本格式的棋局图"
+	exit 0 ;;
+
+    -m | --text-mode)
+	##为不同的排版对齐效果，选择相应的文本格式。
+	# 默认参数值为1。见文件头的变量定义及说明。
+	TEXT_STYLE="$2"
+	if [ "$TEXT_STYLE" = '' ]; then
+	    TEXT_STYLE='1'
+	fi
+	
+	shift 2 ;;
+
+    -e | --row-end)
+	##每行棋子布局图最后面是否添加数字序号。
+	# 默认参数值为2。见文件头的变量定义及说明。
+	ROW_TAIL_STYLE="$2"
+	if [ "$ROW_TAIL_STYLE" = '' ]; then
+	    ROW_TAIL_STYLE='2'
+	fi
+	shift 2 ;;
+    
+    -*)
+	echo "Unrecognized option \`$option'" 1>&2
+	exit 1;;
+
+esac
+
+done
+
+echo -e "  $APPNAME $APPVER"
+echo -e "  TEXT_STYLE=$TEXT_STYLE\tROW_TAIL_STYLE=$ROW_TAIL_STYLE "
+
+echo
+_tips01
+echo
+
+### part 0 ###
+#[FEN "rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1"]
+
+echo "请输入中国象棋FEN格式串(象棋局面数据)。按[回车键]使用标准开局:"
+_default_fen
+
+echo -en "  "
+
+    ## Next:
+    #tput cup "$CLINES" "$CCOL"
+    tput sc
+
+## TAG 170: 
+while true; do
+    
+read FEN
+
+if [ "$FEN" = '' ]; then
+  FEN="${DEFAULT_FEN}"
+elif [ "$FEN" = '1234' ]; then
+  echo "  Exit." ; exit 0;
+  else :
+fi
+
+## array_id of fen: 0-9 only. 10 and more ignored;
+#  0-4: default for BLACK side;
+#  5-9: default for RED side;
+declare -a fen=( `echo "$FEN" | sed '/\//s// /g'` )
+
+declare -a anyline
+declare -i ID=9
+
+declare -i ROW_COUNT=0    #计数：最多有10行棋子数据。忽略多余的数据；
+declare -i PIECE_COUNT=0  #计数：最多每行有9个棋子。超出数量则报错；
+
+## TAG 235: /1
+	 case "$TEXT_STYLE" in
+	     2 | newsmth)# 水木清华 发贴风格 www.newsmth.net:
+		 echo "　１..２..３..４..５..６..７..８..９ "
+		 echo "　========************======== "
+		 echo -e "　　　　　　　 $BLACK\n"
+	     ;;
+	     *)echo " 　１　２　３　４　５　６　７　８　９ "
+	       echo "　 ==　==　==　##　##　##　==　==　== "
+	       echo -e "　　　　　　　　　$BLACK\n"
+	       ;;
+	 esac
+
+
+	 ## 判断数组 fen[@] 的有效数据行数：应为10个数据（即10行棋子。
+	 #  多了或少了都不正常。
+	 #  异常处理：强行丢弃多余的行数。忽略行数不够10行的情况。
+	 
+for a in "${fen[@]}"; do
+
+    if [ "$ROW_COUNT" -le 9 ]; then
+	let "ROW_COUNT += 1"
+    else continue;
+    fi
+       
+    # 把每行的字符串，分拆为单个字符（即单个棋子代码），数量应为9个
+    # （多了或少了都不正常，需要报错提示，或者自动补齐）
+    anyline=( `echo "${a[@]}" | sed '/./s//& /g'` )
+
+    # debug
+    if [ "$DEBUG" = 1 ]; then
+    echo -e "\t anyline[@]='${anyline[@]}'"
+    echo -e "\t #anyline[@]='${#anyline[@]}'"
+    sleep 3;
+    fi
+    # ///debug
+    
+    #echo -n "　"
+
+    ## TAG 115: count for piece. 9 max;
+    # [todo]: fill to 9 for less ;
+
+    #init for each new row
+    PIECE_COUNT=0
+    unset ROW_TEXT
+    
+    for piece in "${anyline[@]}"; do
+	case "$piece" in
+	    [1-9])
+		for n in `seq 1 "$piece"`; do
+		    #echo -n "${pr[0]}"
+		    ROW_TEXT="${ROW_TEXT}${pr[0]}" 
+		done
+	       ;;
+	    
+    	    R)#echo -n "${pr[1]}"
+	       ROW_TEXT="${ROW_TEXT}${pr[1]}" ;;
+	    N | H )#echo -n "${pr[2]}"
+		    ROW_TEXT="${ROW_TEXT}${pr[2]}" ;;
+	    B | E)#echo -n "${pr[3]}"
+	     ROW_TEXT="${ROW_TEXT}${pr[3]}" ;;
+	    A)#echo -n "${pr[4]}"
+	     ROW_TEXT="${ROW_TEXT}${pr[4]}" ;;
+	    K)#echo -n "${pr[5]}"
+	     ROW_TEXT="${ROW_TEXT}${pr[5]}" ;;
+	    C)#echo -n "${pr[6]}"
+	     ROW_TEXT="${ROW_TEXT}${pr[6]}" ;;
+	    P)#echo -n "${pr[7]}"
+	     ROW_TEXT="${ROW_TEXT}${pr[7]}" ;;
+	    
+    	    r)#echo -n "${pb[1]}"
+	     ROW_TEXT="${ROW_TEXT}${pb[1]}" ;;
+	    n | h )#echo -n "${pb[2]}"
+	     ROW_TEXT="${ROW_TEXT}${pb[2]}" ;;
+	    b | e)#echo -n "${pb[3]}"
+	     ROW_TEXT="${ROW_TEXT}${pb[3]}" ;;
+	    a)#echo -n "${pb[4]}"
+	     ROW_TEXT="${ROW_TEXT}${pb[4]}" ;;
+	    k)#echo -n "${pb[5]}"
+	     ROW_TEXT="${ROW_TEXT}${pb[5]}" ;;
+	    c)#echo -n "${pb[6]}"
+	     ROW_TEXT="${ROW_TEXT}${pb[6]}" ;;
+	    p)#echo -n "${pb[7]}"
+	     ROW_TEXT="${ROW_TEXT}${pb[7]}" ;;
+
+	    ## 扩展棋子代码（非标准FEN格式）。主要用于标示下一步或上一步的走棋路线。
+	    #  共3种代码：
+	    # 0,X: 红方下一步，或者悔棋后的上一步的棋子目标位置;
+	    # x：  黑方。
+	    0 | X)#echo -n "${pr[8]}"
+	     ROW_TEXT="${ROW_TEXT}${pr[8]}" ;;
+	    x)#echo -n "${pb[8]}"
+	     ROW_TEXT="${ROW_TEXT}${pb[8]}" ;;
+	    
+	    *)echo -e "\n  E115: 错误或无法识别的棋子代码: '$piece'\n" 1>&2;
+	      echo "$FEN" | grep --color=auto "$piece"
+	      exit 0;
+	      #break;
+	      ;;
+	esac
+	
+	let "PIECE_COUNT += 1"
+	
+	if [ "$PIECE_COUNT" -gt 9 ]; then
+	    echo -e "  \nE155: 单行棋子数超过9个！请检查FEN并重新输入！\n" 1>&2
+	    exit 0;
+
+	fi
+	
+    done
+
+    # [todo]
+    _todo001 () {
+	cat<<EOF
+	if [ "$PIECE_COUNT" -lt 9 ]; then
+	    anyline=( "${anyline[@]}" '1' )
+	    echo -e "  \nE160: 单行棋子数少于9个！请检查FEN并重新输入！\n" 1>&2
+	    exit 0;
+	fi
+EOF
+		}
+	# ///[todo]
+
+
+    # repalce 2 half-width space to Chinese double-width space,
+    # for good align effects to fill any font style;
+
+
+## TAG 235: /3
+	 case "$TEXT_STYLE" in
+	     2 | newsmth)# 水木清华 发贴风格 www.newsmth.net:
+	 ROW_TEXT=`echo "$ROW_TEXT" | sed "/\ \ /s//\.\./g"`
+	     ;;
+	     *)
+	 ROW_TEXT=`echo "$ROW_TEXT" | sed "/\ \ /s//　/g"`	       
+	       ;;
+	 esac
+	 
+    #echo -n "$ROW_TEXT"
+    if [ "$ROW_TAIL_STYLE" != 0 ]; then
+     
+    ## add line number (0-9) as row end, and make newline for next lines
+    ## TAG 149: switch ROW_TAIL_STYLE:
+    # 是否在每行后面显示数字序号:
+    # 0=不显示；1=显示；
+    # 2=显示数字，但双方河界的两行不显示数字，改为显示加号+；
+	case "$ID" in
+	  [0-36-9)TAIL="$ID" ;;
+	  [45])if [ "$ROW_TAIL_STYLE" = '1' ]; then
+		TAIL="$ID"		     
+	     else TAIL="+"
+	     fi ;;
+	   *)TAIL="$ID" ;;	
+	esac
+
+	 echo "　$ROW_TEXT  $TAIL "
+
+    else echo "　$ROW_TEXT  "
+    fi
+	 
+    let "ID -= 1"
+done
+
+
+### /part 0 ###
+
+### part 1 ###
+
+	 ## TAG 235: /2
+	 case "$TEXT_STYLE" in
+	     2 | newsmth)# 水木清华 发贴风格 www.newsmth.net:
+		echo -e "\n　　　　　　　 $RED"
+		echo "　========************======== "
+		echo " 　九..八..七..六..五..四..三..二..一 "
+	     ;;
+	     *)echo -e "\n　　　　　　　　　$RED"
+	       echo "　 ==　==　==　##　##　##　==　==　== "
+	       echo " 　九　八　七　六　五　四　三　二　一 "
+	       ;;
+	 esac
+
+### /part 1 ###
+
+echo; tput rc;
+
+### ///TAG 170: End for while ...do;
+done
+
+### /BODY ###
+
+exit 0;
